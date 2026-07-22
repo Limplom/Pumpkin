@@ -10,6 +10,7 @@ use crate::world::World;
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::damage::DamageType;
+use pumpkin_data::fluid::Fluid;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::meta_data_type::MetaDataType;
 use pumpkin_data::tag::{self, Taggable};
@@ -356,7 +357,25 @@ impl MobEntity {
             return false;
         }
 
+        // Issue #2162: a mob repeatedly jumping in shallow water (e.g. a drowned
+        // standing on a solid block with a single water block above it) briefly
+        // lifts its whole hitbox above the water surface, flickering
+        // `touching_water` to `false` for a tick and spuriously igniting it in
+        // daylight. Treat the mob as in water while its feet block is water or —
+        // only while airborne (mid-jump) — the block just below is water. The
+        // airborne gate preserves vanilla behaviour: an undead resting *on* a
+        // water-containing block (lily pad, waterlogged slab) is not in the water
+        // and still burns. `get_fluid` normalises source water to FLOWING_WATER.
+        // Evaluated lazily so the fluid lookups are skipped when already in water.
+        let is_over_water = || {
+            let is_water = |pos: &BlockPos| world.get_fluid(pos).id == Fluid::FLOWING_WATER.id;
+            let feet_pos = entity.block_pos.load();
+            is_water(&feet_pos)
+                || (!entity.on_ground.load(Relaxed) && is_water(&feet_pos.down()))
+        };
+
         let is_in_non_burnable = entity.touching_water.load(Relaxed)
+            || is_over_water()
             || world.weather.lock().await.raining
             || entity.is_in_powder_snow()
             || entity.was_in_powder_snow.load(Relaxed);
