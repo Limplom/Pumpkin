@@ -235,6 +235,30 @@ impl PartialEq for World {
 
 impl Eq for World {}
 
+tokio::task_local! {
+    /// Current re-entrant depth of a block-update cascade on this task.
+    ///
+    /// Setting a block state can trigger state-replacement, placement and
+    /// neighbor-update callbacks, each of which may change further blocks and
+    /// recurse back into [`World::set_block_state`]. A large chain of blocks
+    /// that update one another - for example `/fill`ing a big region with
+    /// blocks that need a supporting block (saplings, pressure plates, ...) and
+    /// pop off, updating their neighbors in turn - would otherwise recurse
+    /// unbounded and overflow the worker-thread stack, crashing the server.
+    static BLOCK_UPDATE_DEPTH: u32;
+}
+
+/// Maximum re-entrant block-update cascade depth before further cascading
+/// callbacks are dropped to protect the call stack.
+///
+/// Each level nests several large async poll frames, so the safe ceiling
+/// depends on the worker thread stack (tokio's 2 MiB default) and is larger in
+/// debug builds. This is deliberately conservative: normal gameplay cascades are
+/// only a handful of levels deep, so 64 leaves ample headroom while still
+/// stopping the unbounded `/fill`-of-unsupported-blocks recursion that overflows
+/// the stack (issue #2016).
+const MAX_BLOCK_UPDATE_DEPTH: u32 = 64;
+
 impl World {
     pub async fn get_block_state_id_async(&self, position: &BlockPos) -> BlockStateId {
         if !self.is_in_build_limit(*position) {
@@ -4300,86 +4324,105 @@ impl World {
             self.remove_block_entity(position);
         }
 
-        // WorldChunk.java line 317
-        if is_new_block && (flags.contains(BlockFlags::NOTIFY_NEIGHBORS) || block_moved) {
-            self.block_registry
-                .on_state_replaced(
-                    self,
-                    old_block,
-                    position,
-                    replaced_block_state_id,
-                    block_moved,
-                )
+        // The state-replacement, placement and neighbor-update callbacks below
+        // can each change further blocks and recurse back into `set_block_state`.
+        // Bound that re-entrant depth so a large cascade of updating blocks (e.g.
+        // `/fill`ing a big region of unsupported saplings or pressure plates that
+        // pop off and update their neighbors) cannot overflow the stack.
+        let update_depth = BLOCK_UPDATE_DEPTH.try_with(|depth| *depth).unwrap_or(0);
+        if update_depth >= MAX_BLOCK_UPDATE_DEPTH {
+            warn!(
+                "Dropping block-update cascade at {position:?}: reached max depth {MAX_BLOCK_UPDATE_DEPTH} (very large chain of updating blocks, e.g. a big /fill of unsupported blocks)"
+            );
+        } else {
+            BLOCK_UPDATE_DEPTH
+                .scope(update_depth + 1, async move {
+                    // WorldChunk.java line 317
+                    if is_new_block && (flags.contains(BlockFlags::NOTIFY_NEIGHBORS) || block_moved)
+                    {
+                        self.block_registry
+                            .on_state_replaced(
+                                self,
+                                old_block,
+                                position,
+                                replaced_block_state_id,
+                                block_moved,
+                            )
+                            .await;
+                    }
+
+                    // WorldChunk.java line 318
+                    if !flags.contains(BlockFlags::SKIP_BLOCK_ADDED_CALLBACK)
+                        && new_block != old_block
+                    {
+                        self.block_registry
+                            .on_placed(
+                                self,
+                                new_block,
+                                block_state_id,
+                                position,
+                                replaced_block_state_id,
+                                block_moved,
+                            )
+                            .await;
+                        let new_fluid = self.get_fluid(position);
+                        self.block_registry
+                            .on_placed_fluid(
+                                self,
+                                new_fluid,
+                                block_state_id,
+                                position,
+                                replaced_block_state_id,
+                                block_moved,
+                            )
+                            .await;
+                    }
+
+                    // Ig they do this cause it could be modified in chunkPos.setBlockState?
+                    if self.get_block_state_id(position) == block_state_id {
+                        if flags.contains(BlockFlags::NOTIFY_LISTENERS) {
+                            // Mob AI update
+                        }
+
+                        if flags.contains(BlockFlags::NOTIFY_NEIGHBORS) {
+                            self.update_neighbors(position, None).await;
+                            // TODO: updateComparators
+                        }
+
+                        if !flags.contains(BlockFlags::FORCE_STATE) {
+                            let mut new_flags = flags;
+                            new_flags.remove(BlockFlags::NOTIFY_NEIGHBORS);
+                            new_flags.remove(BlockFlags::NOTIFY_LISTENERS);
+                            self.block_registry
+                                .prepare(
+                                    self,
+                                    position,
+                                    Block::from_state_id(replaced_block_state_id),
+                                    replaced_block_state_id,
+                                    new_flags,
+                                )
+                                .await;
+                            self.block_registry
+                                .update_neighbors(
+                                    self,
+                                    position,
+                                    Block::from_state_id(block_state_id),
+                                    new_flags,
+                                )
+                                .await;
+                            self.block_registry
+                                .prepare(
+                                    self,
+                                    position,
+                                    Block::from_state_id(block_state_id),
+                                    block_state_id,
+                                    new_flags,
+                                )
+                                .await;
+                        }
+                    }
+                })
                 .await;
-        }
-
-        // WorldChunk.java line 318
-        if !flags.contains(BlockFlags::SKIP_BLOCK_ADDED_CALLBACK) && new_block != old_block {
-            self.block_registry
-                .on_placed(
-                    self,
-                    new_block,
-                    block_state_id,
-                    position,
-                    replaced_block_state_id,
-                    block_moved,
-                )
-                .await;
-            let new_fluid = self.get_fluid(position);
-            self.block_registry
-                .on_placed_fluid(
-                    self,
-                    new_fluid,
-                    block_state_id,
-                    position,
-                    replaced_block_state_id,
-                    block_moved,
-                )
-                .await;
-        }
-
-        // Ig they do this cause it could be modified in chunkPos.setBlockState?
-        if self.get_block_state_id(position) == block_state_id {
-            if flags.contains(BlockFlags::NOTIFY_LISTENERS) {
-                // Mob AI update
-            }
-
-            if flags.contains(BlockFlags::NOTIFY_NEIGHBORS) {
-                self.update_neighbors(position, None).await;
-                // TODO: updateComparators
-            }
-
-            if !flags.contains(BlockFlags::FORCE_STATE) {
-                let mut new_flags = flags;
-                new_flags.remove(BlockFlags::NOTIFY_NEIGHBORS);
-                new_flags.remove(BlockFlags::NOTIFY_LISTENERS);
-                self.block_registry
-                    .prepare(
-                        self,
-                        position,
-                        Block::from_state_id(replaced_block_state_id),
-                        replaced_block_state_id,
-                        new_flags,
-                    )
-                    .await;
-                self.block_registry
-                    .update_neighbors(
-                        self,
-                        position,
-                        Block::from_state_id(block_state_id),
-                        new_flags,
-                    )
-                    .await;
-                self.block_registry
-                    .prepare(
-                        self,
-                        position,
-                        Block::from_state_id(block_state_id),
-                        block_state_id,
-                        new_flags,
-                    )
-                    .await;
-            }
         }
 
         let (_chunk_coordinate, _) = position.chunk_and_chunk_relative_position();
