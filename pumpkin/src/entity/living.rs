@@ -2384,7 +2384,12 @@ impl EntityBase for LivingEntity {
                     let target_pos = self.entity.pos.load();
                     let dx = source_pos.x - target_pos.x;
                     let dz = source_pos.z - target_pos.z;
-                    self.entity.apply_knockback(0.4, dx, dz);
+                    self.entity.apply_knockback(
+                        0.4,
+                        self.get_attribute_value(&Attributes::KNOCKBACK_RESISTANCE),
+                        dx,
+                        dz,
+                    );
                     self.entity.send_velocity();
                 }
             }

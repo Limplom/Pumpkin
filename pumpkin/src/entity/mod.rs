@@ -123,6 +123,15 @@ pub const fn equipment_break_status(slot: &EquipmentSlot) -> EntityStatus {
     }
 }
 
+/// Reduces a knockback `strength` by the victim's `KNOCKBACK_RESISTANCE` attribute value.
+///
+/// Mirrors vanilla `LivingEntity.takeKnockback`:
+/// `strength *= 1.0 - clamp(knockback_resistance, 0.0, 1.0)`.
+#[must_use]
+pub fn reduce_knockback_by_resistance(strength: f64, knockback_resistance: f64) -> f64 {
+    strength * (1.0 - knockback_resistance.clamp(0.0, 1.0))
+}
+
 pub type EntityBaseFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub type TeleportFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -1353,8 +1362,11 @@ impl Entity {
     /// Applies knockback to the entity, following vanilla Minecraft's mechanics.
     /// `LivingEntity.takeKnockback()`
     /// This function calculates the entity's new velocity based on the specified knockback strength and direction.
-    pub fn apply_knockback(&self, strength: f64, mut x: f64, mut z: f64) {
-        // TODO: strength *= 1 - Entity attribute knockback resistance
+    ///
+    /// `knockback_resistance` is the victim's `KNOCKBACK_RESISTANCE` attribute value
+    /// (0 for entities without the attribute); it scales the strength down as in vanilla.
+    pub fn apply_knockback(&self, strength: f64, knockback_resistance: f64, mut x: f64, mut z: f64) {
+        let strength = reduce_knockback_by_resistance(strength, knockback_resistance);
 
         if strength <= 0.0 {
             return;
@@ -2515,7 +2527,16 @@ impl Entity {
     /// Applies knockback to the entity, following vanilla Minecraft's mechanics.
     ///
     /// This function calculates the entity's new velocity based on the specified knockback strength and direction.
-    pub fn knockback(&self, strength: f64, x: f64, z: f64) {
+    ///
+    /// `knockback_resistance` is the victim's `KNOCKBACK_RESISTANCE` attribute value
+    /// (0 for entities without the attribute); it scales the strength down as in vanilla.
+    pub fn knockback(&self, strength: f64, knockback_resistance: f64, x: f64, z: f64) {
+        let strength = reduce_knockback_by_resistance(strength, knockback_resistance);
+
+        if strength <= 0.0 {
+            return;
+        }
+
         // This has some vanilla magic
         let mut x = x;
         let mut z = z;
@@ -3665,5 +3686,25 @@ mod tests {
                 "status mismatch at index {i}"
             );
         }
+    }
+
+    #[test]
+    fn knockback_resistance_scales_strength() {
+        let base = 1.0;
+        // No resistance -> full knockback strength.
+        assert!((reduce_knockback_by_resistance(base, 0.0) - 1.0).abs() < 1e-9);
+        // Full resistance -> no knockback.
+        assert!(reduce_knockback_by_resistance(base, 1.0).abs() < 1e-9);
+        // 0.6 resistance -> 40% of the strength.
+        assert!((reduce_knockback_by_resistance(base, 0.6) - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn knockback_resistance_is_clamped() {
+        let base = 1.0;
+        // Negative resistance behaves like 0 (full knockback).
+        assert!((reduce_knockback_by_resistance(base, -0.5) - 1.0).abs() < 1e-9);
+        // Resistance above 1 behaves like 1 (no knockback).
+        assert!(reduce_knockback_by_resistance(base, 2.0).abs() < 1e-9);
     }
 }

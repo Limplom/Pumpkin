@@ -1142,7 +1142,15 @@ impl Player {
                 _ => {}
             }
             if config.knockback {
-                combat::handle_knockback(attacker_entity, victim_entity, knockback_strength);
+                let knockback_resistance = victim.get_living_entity().map_or(0.0, |living| {
+                    living.get_attribute_value(&Attributes::KNOCKBACK_RESISTANCE)
+                });
+                combat::handle_knockback(
+                    attacker_entity,
+                    victim_entity,
+                    knockback_strength,
+                    knockback_resistance,
+                );
             }
         }
 

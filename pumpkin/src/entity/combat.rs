@@ -61,10 +61,16 @@ impl AttackType {
     }
 }
 
-pub fn handle_knockback(attacker: &Entity, victim: &Entity, strength: f64) {
+pub fn handle_knockback(
+    attacker: &Entity,
+    victim: &Entity,
+    strength: f64,
+    knockback_resistance: f64,
+) {
     let yaw = attacker.yaw.load();
     victim.knockback(
         strength * 0.5,
+        knockback_resistance,
         f64::from((yaw.to_radians()).sin()),
         f64::from(-(yaw.to_radians()).cos()),
     );

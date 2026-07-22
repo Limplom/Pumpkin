@@ -418,10 +418,17 @@ impl EntityBase for ArrowEntity {
                             && let Some(owner_id) = self.owner_id
                             && let Some(owner_entity) = world.get_entity_by_id(owner_id)
                         {
+                            let knockback_resistance =
+                                target.get_living_entity().map_or(0.0, |living| {
+                                    living.get_attribute_value(
+                                        &pumpkin_data::attributes::Attributes::KNOCKBACK_RESISTANCE,
+                                    )
+                                });
                             crate::entity::combat::handle_knockback(
                                 owner_entity.get_entity(),
                                 target.get_entity(),
                                 f64::from(punch) * 0.6,
+                                knockback_resistance,
                             );
                         }
 
