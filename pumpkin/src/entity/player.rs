@@ -1084,6 +1084,22 @@ impl Player {
 
         player_attack_sound(&pos, &world, attack_type).await;
 
+        // Vanilla broadcasts the critical-hit animation (status 4) on the victim so
+        // all tracking clients render the crit particles around the target.
+        if matches!(attack_type, AttackType::Critical) {
+            let je_packet =
+                CEntityAnimation::new(VarInt(victim_entity.entity_id), Animation::CriticalEffect);
+            let be_packet = pumpkin_protocol::bedrock::server::animate::SAnimate {
+                action: pumpkin_protocol::bedrock::server::animate::AnimateAction::CriticalHit,
+                runtime_entity_id: pumpkin_protocol::codec::var_ulong::VarULong(
+                    victim_entity.entity_id as u64,
+                ),
+                data: 0.0,
+                swing_source: None,
+            };
+            world.broadcast_editioned(&je_packet, &be_packet).await;
+        }
+
         self.living_entity.last_attacking_id.store(
             victim_entity.entity_id,
             std::sync::atomic::Ordering::Relaxed,
