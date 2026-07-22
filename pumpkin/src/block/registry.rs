@@ -43,6 +43,7 @@ use crate::block::blocks::hay::HayBlock;
 use crate::block::blocks::infested::InfestedBlock;
 use crate::block::blocks::iron_bars::IronBarsBlock;
 use crate::block::blocks::jigsaw::JigsawBlock;
+use crate::block::blocks::leaves::LeavesBlock;
 use crate::block::blocks::logs::LogBlock;
 use crate::block::blocks::magma::MagmaBlock;
 use crate::block::blocks::mangrove_roots::MangroveRootsBlock;
@@ -229,6 +230,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(InfestedBlock);
     manager.register(JukeboxBlock);
     manager.register(LogBlock);
+    manager.register(LeavesBlock);
     manager.register(BambooBlock);
     manager.register(BambooSaplingBlock);
     manager.register(BannerBlock);
