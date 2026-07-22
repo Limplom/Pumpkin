@@ -220,6 +220,8 @@ pub enum AdvancementDataError {
     Io(std::io::Error),
     #[error("JSON error: {0}")]
     Json(serde_json::Error),
+    #[error("UTF-8 error: {0}")]
+    Utf8(std::str::Utf8Error),
 }
 
 impl PlayerAdvancement {
@@ -292,8 +294,31 @@ impl PlayerAdvancement {
             .await
             .expect("spawn_blocking task panicked")?;
 
-        let loaded_data: HashMap<String, AdvancementProgress> =
-            serde_json::from_str(from_utf8(&json).unwrap()).map_err(AdvancementDataError::Json)?;
+        // A corrupt or partially-written advancement file (invalid UTF-8 or
+        // malformed JSON) must never crash the server on player load. Any
+        // parse error is logged with the file path and propagated to the
+        // caller, which keeps the player's progress empty (as for a fresh
+        // player with no saved file) and logs a warning.
+        let text = match from_utf8(&json) {
+            Ok(text) => text,
+            Err(e) => {
+                error!(
+                    "Corrupt advancement file {} contains invalid UTF-8; keeping progress empty: {e}",
+                    self.path.display()
+                );
+                return Err(AdvancementDataError::Utf8(e));
+            }
+        };
+        let loaded_data: HashMap<String, AdvancementProgress> = match serde_json::from_str(text) {
+            Ok(data) => data,
+            Err(e) => {
+                error!(
+                    "Corrupt advancement file {} contains invalid JSON; keeping progress empty: {e}",
+                    self.path.display()
+                );
+                return Err(AdvancementDataError::Json(e));
+            }
+        };
 
         self.progress.clear();
         for (advancement_id, mut progress) in loaded_data {
@@ -798,6 +823,50 @@ mod tests {
         assert!(
             pa.progress.is_empty(),
             "The advancement shouldn't have been loaded"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_corrupt_non_utf8_does_not_panic() {
+        let temp_dir = tempdir().unwrap();
+        let manager = Arc::new(AdvancementManager::new(temp_dir.path(), true));
+        let id = Uuid::new_v4();
+        let mut pa = PlayerAdvancement::new(manager, id);
+
+        // Simulate disk corruption / partial write: invalid UTF-8 bytes.
+        std::fs::write(&pa.path, [0xff, 0xfe, 0x00, 0x9f]).unwrap();
+
+        // Load must not panic; it returns an error and leaves progress empty.
+        let result = pa.load().await;
+        assert!(
+            result.is_err(),
+            "Loading a non-UTF-8 file should return an error, not panic"
+        );
+        assert!(
+            pa.progress.is_empty(),
+            "Progress should remain empty after a corrupt load"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_corrupt_invalid_json_does_not_panic() {
+        let temp_dir = tempdir().unwrap();
+        let manager = Arc::new(AdvancementManager::new(temp_dir.path(), true));
+        let id = Uuid::new_v4();
+        let mut pa = PlayerAdvancement::new(manager, id);
+
+        // Valid UTF-8 but malformed JSON (e.g. a truncated partial write).
+        std::fs::write(&pa.path, "{ this is not valid json").unwrap();
+
+        // Load must not panic; it returns an error and leaves progress empty.
+        let result = pa.load().await;
+        assert!(
+            result.is_err(),
+            "Loading invalid JSON should return an error, not panic"
+        );
+        assert!(
+            pa.progress.is_empty(),
+            "Progress should remain empty after a corrupt load"
         );
     }
 }
