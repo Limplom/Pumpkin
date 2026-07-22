@@ -415,20 +415,40 @@ impl LivingEntity {
 
     /// Returns the base attribute value for `attribute` for this entity's type.
     pub fn get_attribute_base(&self, attribute: &Attributes) -> f64 {
-        // Check the local base value first (could be modified)
-        let map = self.attributes.read().unwrap();
-        if let Some(instance) = map.get(&attribute.id) {
-            return instance.base_value;
+        // Check the local base value first (could be modified). Bind it to a
+        // local so the read guard is dropped at the end of this statement rather
+        // than being held across the whole `if let` (significant_drop_in_scrutinee).
+        let local_base = self
+            .attributes
+            .read()
+            .unwrap()
+            .get(&attribute.id)
+            .map(|instance| instance.base_value);
+        if let Some(base_value) = local_base {
+            return base_value;
         }
 
-        // Fall back to registry base value if no local instance exists
+        // Fall back to the entity type's registry base value. If this entity type
+        // does not define the attribute, use the attribute's global default rather
+        // than unwrapping a `None` (which would panic and poison the attributes
+        // lock, e.g. when querying an attribute a player's type doesn't define).
         self.entity
             .entity_type
             .attributes
             .iter()
             .find(|a| a.0.id == attribute.id)
-            .unwrap()
-            .1
+            .map_or_else(
+                || {
+                    tracing::warn!(
+                        "Entity type {:?} has no base value for attribute {:?}; falling back to default {}",
+                        self.entity.entity_type,
+                        attribute.id,
+                        attribute.default_value,
+                    );
+                    attribute.default_value
+                },
+                |a| a.1,
+            )
     }
 
     /// Update or insert the base value for an attribute on this entity.
