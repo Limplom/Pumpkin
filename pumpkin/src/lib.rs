@@ -48,7 +48,10 @@ pub mod logging;
 pub mod net;
 pub mod plugin;
 pub mod server;
+pub mod terminal;
 pub mod world;
+
+pub use terminal::{restore_terminal, save_terminal_state};
 
 pub struct LoggingConfig {
     pub color: bool,
@@ -98,6 +101,11 @@ pub fn init_logger(advanced_config: &AdvancedConfiguration) {
             Box<dyn std::io::Write + Send + 'static>,
             Option<Editor<PumpkinCommandCompleter, FileHistory>>,
         ) = if advanced_config.commands.use_tty && stdin().is_terminal() {
+            // Snapshot the cooked terminal state before the console reader can
+            // switch it to raw mode, so it can be restored on crash/exit paths
+            // (see `terminal` module and issue #2441).
+            crate::terminal::save_terminal_state();
+
             let rl_config = Config::builder()
                 .auto_add_history(true)
                 .completion_type(rustyline::CompletionType::List)
@@ -184,7 +192,10 @@ pub fn stop_server() {
 
 pub fn stop_or_exit_server() {
     if SERVER_IS_STOPPING.load(Ordering::Acquire) {
-        // Server is already stopping, so we forcefully exit.
+        // Server is already stopping, so we forcefully exit. Restore the
+        // terminal first: the console reader thread may still be blocked in
+        // `readline` holding raw mode (e.g. on a second interrupt signal).
+        crate::restore_terminal();
         exit(SERVER_EXIT_CODE.load(Ordering::Acquire));
     } else {
         stop_server();

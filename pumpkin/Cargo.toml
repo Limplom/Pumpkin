@@ -113,6 +113,10 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 indexmap.workspace = true
 
+# Terminal (TTY) restoration on crash/exit paths
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 
