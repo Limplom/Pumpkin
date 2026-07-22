@@ -1318,14 +1318,12 @@ impl LivingEntity {
 
     pub async fn on_death(
         &self,
+        dyn_self: &dyn EntityBase,
         damage_type: DamageType,
         source: Option<&dyn EntityBase>,
         cause: Option<&dyn EntityBase>,
     ) {
         let world = self.entity.world.load();
-        let dyn_self = world
-            .get_entity_by_id(self.entity.entity_id)
-            .expect("Entity not found in world");
         if self
             .dead
             .compare_exchange(false, true, Relaxed, Relaxed)
@@ -1335,7 +1333,7 @@ impl LivingEntity {
             self.jumping.store(false, Relaxed);
 
             // Statistics updates
-            self.update_death_stats(&*dyn_self, cause).await;
+            self.update_death_stats(dyn_self, cause).await;
 
             // Plays the death sound
             world.send_entity_status(&self.entity, EntityStatus::Death);
@@ -1397,7 +1395,7 @@ impl LivingEntity {
             self.drop_equipment().await;
 
             // Broadcast death message if it's a player and the gamerule is enabled
-            self.broadcast_death_message(&*dyn_self, damage_type, source, cause)
+            self.broadcast_death_message(dyn_self, damage_type, source, cause)
                 .await;
 
             self.reset_effects_and_attributes().await;
@@ -2473,7 +2471,7 @@ impl EntityBase for LivingEntity {
             if clamped_health <= 0.0
                 && (bypasses_cooldown_protection || !self.try_use_death_protector(caller).await)
             {
-                self.on_death(damage_type, source, cause).await;
+                self.on_death(caller, damage_type, source, cause).await;
             }
 
             // Armor durability is based on incoming raw damage, not post-absorption remaining.
