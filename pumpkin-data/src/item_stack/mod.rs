@@ -908,6 +908,46 @@ mod tests {
         assert!(decoded.get_data_component::<UnbreakableImpl>().is_some());
     }
 
+    /// Regression test for issue #2433: enchanting an item (e.g. Knockback II
+    /// on a netherite sword) and then persisting the inventory bricked the
+    /// world. An enchanted stack that also carries a component with no
+    /// `write_data` implementation (which serializes to `NbtTag::End`) must
+    /// still survive a full NBT save/load cycle without corrupting the stream,
+    /// and the enchantment must round-trip intact.
+    #[test]
+    fn enchanted_item_survives_nbt_roundtrip() {
+        use crate::Enchantment;
+        let mut stack = ItemStack::new(1, &Item::NETHERITE_SWORD);
+        stack.enchant(&Enchantment::KNOCKBACK, 2);
+        // A netherite sword synced from the client carries default components
+        // such as attribute modifiers, whose `write_data` is unimplemented and
+        // returns `NbtTag::End`. Emulate that here to exercise the exact path
+        // that corrupted the save file.
+        stack.patch.push((
+            DataComponent::AttributeModifiers,
+            Some(
+                crate::data_component_impl::AttributeModifiersImpl {
+                    attribute_modifiers: Cow::Owned(Vec::new()),
+                }
+                .to_dyn(),
+            ),
+        ));
+
+        let mut compound = NbtCompound::new();
+        stack.write_item_stack(&mut compound);
+
+        // Full gzip disk cycle, exactly like a player `.dat` file.
+        let mut buf: Vec<u8> = Vec::new();
+        pumpkin_nbt::nbt_compress::write_gzip_compound_tag(compound, &mut buf)
+            .expect("gzip write");
+        let decoded_root =
+            pumpkin_nbt::nbt_compress::read_gzip_compound_tag(std::io::Cursor::new(buf))
+                .expect("gzip read");
+
+        let decoded = ItemStack::read_item_stack(&decoded_root).expect("stack should decode");
+        assert_eq!(decoded.get_enchantment_level(&Enchantment::KNOCKBACK), 2);
+    }
+
     // ── damage_item ───────────────────────────────────────────────
 
     #[test]

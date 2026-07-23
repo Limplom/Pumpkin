@@ -89,6 +89,17 @@ impl NbtCompound {
 
     pub fn serialize_content<W: NbtWriteHelper>(self, w: &mut W) -> Result<(), Error> {
         for (name, tag) in self.child_tags {
+            // A named child can never legitimately hold a bare `End` tag: its
+            // type id is `END_ID` (0), which a reader interprets as the compound
+            // terminator, prematurely ending the compound and corrupting every
+            // byte that follows. Data components whose `write_data` is not yet
+            // implemented fall back to the default impl and return
+            // `NbtTag::End`; writing one of those into an item's `components`
+            // compound bricked player/world data on save (issue #2433). `End`
+            // carries no data, so skipping it loses nothing representable.
+            if matches!(tag, NbtTag::End) {
+                continue;
+            }
             w.write_u8(tag.get_type_id())?;
             w.write_string(&name)?;
             tag.serialize_data(w)?;
@@ -423,7 +434,60 @@ impl Display for NbtTag {
 #[cfg(test)]
 mod tests {
     use super::NbtCompound;
+    use crate::nbt_compress::{read_gzip_compound_tag, write_gzip_compound_tag_to_bytes};
+    use crate::serializer::NbtWriteHelperJava;
+    use crate::tag::NbtTag;
+    use crate::END_ID;
+    use std::io::Cursor;
     use uuid::Uuid;
+
+    /// Regression test for issue #2433: a data component whose `write_data`
+    /// is unimplemented returns `NbtTag::End`. When such a value ends up as a
+    /// named child of a compound, its type id (0) is read back as the compound
+    /// terminator, prematurely ending the compound and corrupting the rest of
+    /// the stream (bricking player/world data on save). `End`-valued children
+    /// must therefore never be written.
+    #[test]
+    fn end_valued_child_is_not_serialized() {
+        let mut compound = NbtCompound::new();
+        compound.child_tags.insert("broken".into(), NbtTag::End);
+
+        let mut bytes = Vec::new();
+        let mut writer = NbtWriteHelperJava::new(&mut bytes);
+        compound.serialize_content(&mut writer).unwrap();
+
+        // Only the compound terminator may be written; the `End`-valued child
+        // must be skipped entirely.
+        assert_eq!(bytes, vec![END_ID]);
+    }
+
+    /// End-to-end version of the above through the exact gzip path used to
+    /// persist player data: siblings written after a stray `End`-valued
+    /// component must survive intact.
+    #[test]
+    fn gzip_roundtrip_with_end_child_preserves_siblings() {
+        let mut components = NbtCompound::new();
+        components.put_int("keep_me", 2); // e.g. an enchantment level
+        components.child_tags.insert("broken".into(), NbtTag::End);
+
+        let mut root = NbtCompound::new();
+        root.put_compound("components", components);
+        root.put_string("id", "minecraft:netherite_sword".to_string());
+        root.put_int("count", 1);
+
+        let bytes = write_gzip_compound_tag_to_bytes(root).expect("write");
+        let decoded = read_gzip_compound_tag(Cursor::new(bytes)).expect("read");
+
+        assert_eq!(
+            decoded.get_string("id"),
+            Some("minecraft:netherite_sword")
+        );
+        assert_eq!(decoded.get_int("count"), Some(1));
+        let components = decoded
+            .get_compound("components")
+            .expect("components compound survives");
+        assert_eq!(components.get_int("keep_me"), Some(2));
+    }
 
     #[test]
     fn uuid_int_array_round_trip() {
