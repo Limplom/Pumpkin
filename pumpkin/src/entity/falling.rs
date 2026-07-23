@@ -1,6 +1,8 @@
 use pumpkin_data::BlockStateId;
 use pumpkin_data::damage::DamageType;
 use pumpkin_data::entity::EntityType;
+use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::meta_data_type::MetaDataType;
 use pumpkin_data::{Block, tracked_data::TrackedData};
 use pumpkin_protocol::java::client::play::Metadata;
@@ -70,15 +72,37 @@ impl EntityBase for FallingEntity {
             entity.tick_block_collisions(caller, server).await;
             if entity.on_ground.load(Ordering::Relaxed) {
                 entity.velocity.store(velo.multiply(0.7, -0.5, 0.7));
-                entity
-                    .world
-                    .load()
-                    .set_block_state(
-                        &self.entity.block_pos.load(),
-                        self.block_state_id,
-                        BlockFlags::NOTIFY_ALL,
-                    )
-                    .await;
+
+                let world = entity.world.load();
+
+                // The block settles in the cell directly above the block it landed
+                // on. Deriving the target from the supporting block (rather than the
+                // entity's floored position) avoids a fencepost error: after the
+                // collision clamp the entity can come to rest a hair below the block
+                // boundary, whose floored position points at the supporting cell.
+                // Placing there overwrote the ground block, so the falling block
+                // vanished instead of landing on top of it (#2467).
+                let place_pos = entity
+                    .get_supporting_block_pos()
+                    .map_or_else(|| self.entity.block_pos.load(), |support| support.up());
+
+                if world.get_block_state(&place_pos).replaceable() {
+                    world
+                        .set_block_state(
+                            &place_pos,
+                            self.block_state_id,
+                            BlockFlags::NOTIFY_ALL,
+                        )
+                        .await;
+                } else {
+                    // Nothing to replace at the landing spot: drop the block as an
+                    // item instead, matching vanilla `FallingBlockEntity`.
+                    let block = Block::from_state_id(self.block_state_id);
+                    if let Some(item) = Item::from_registry_key(block.name) {
+                        world.drop_stack(&place_pos, ItemStack::new(1, item)).await;
+                    }
+                }
+
                 entity.remove().await;
             }
 
