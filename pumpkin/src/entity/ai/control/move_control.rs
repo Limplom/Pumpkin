@@ -97,11 +97,11 @@ impl MoveControlTrait for MoveControl {
             if entity.on_ground.load(Ordering::Relaxed) {
                 self.operation = Operation::Wait;
             }
-        } else {
-            living_entity
-                .movement_input
-                .store(Vector3::new(0.0, 0.0, 0.0));
         }
+
+        // Navigator owns movement input while this controller waits; zeroing it
+        // here would clobber the navigator's path movement every tick and freeze
+        // all mobs in place (issue: entities never move).
     }
 }
 
