@@ -244,7 +244,16 @@ pub trait LoadConfiguration {
     {
         if !config_dir.exists() {
             debug!("creating new config root folder");
-            fs::create_dir(config_dir).expect("Failed to create config root folder");
+            if let Err(err) = fs::create_dir(config_dir) {
+                tracing::error!(
+                    "Failed to create config directory at {}. Reason: {err}. \
+                     The working directory is likely read-only or not writable by the \
+                     current user (for example a root-owned Docker bind mount at /pumpkin). \
+                     Fix the directory's ownership or permissions and restart.",
+                    config_dir.display()
+                );
+                std::process::exit(1);
+            }
         }
         let path = config_dir.join(Self::get_path());
 

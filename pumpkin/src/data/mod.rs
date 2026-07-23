@@ -47,7 +47,16 @@ pub trait LoadJSONConfiguration {
         let data_dir = exe_dir.join(DATA_FOLDER);
         if !data_dir.exists() {
             debug!("creating new data root folder");
-            fs::create_dir(&data_dir).expect("Failed to create data root folder");
+            if let Err(err) = fs::create_dir(&data_dir) {
+                error!(
+                    "Failed to create data directory at {}. Reason: {err}. \
+                     The working directory is likely read-only or not writable by the \
+                     current user (for example a root-owned Docker bind mount at /pumpkin). \
+                     Fix the directory's ownership or permissions and restart.",
+                    data_dir.display()
+                );
+                std::process::exit(1);
+            }
         }
         let path = data_dir.join(Self::get_path());
 

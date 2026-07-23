@@ -59,9 +59,12 @@ async fn main() {
 
     let config = PumpkinConfig::load(&exec_dir);
 
-    let vanilla_data = VanillaData::load();
-
+    // Initialise logging before loading data files so any startup failure (e.g.
+    // an unwritable data directory on a root-owned Docker mount, issue #2057) is
+    // reported through tracing instead of being silently dropped.
     pumpkin::init_logger(&config.advanced);
+
+    let vanilla_data = VanillaData::load();
 
     info!(
         "{}",
