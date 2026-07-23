@@ -82,4 +82,8 @@ impl Mob for BlazeEntity {
     fn get_mob_entity(&self) -> &MobEntity {
         &self.entity
     }
+
+    fn get_mob_gravity(&self) -> f64 {
+        0.0 // Blazes fly and hover, no gravity applied in standard travel
+    }
 }
