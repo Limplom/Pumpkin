@@ -64,7 +64,14 @@ impl PlacedFeature {
         if let ConfiguredFeature::SculkPatch(feature) = feature {
             feature.generate_in_proto_chunk(chunk, random, pos)
         } else {
-            tracing::warn!("Placed feature {feature_name:?} is not supported in a jigsaw pool");
+            // Placing an arbitrary placed feature here would require running the full
+            // `PlacedFeature::generate` pipeline (placement modifiers + configured feature),
+            // which is bound to `GenerationCache`; a jigsaw piece only has a `ProtoChunk`.
+            // Only `SculkPatch` currently has a bespoke ProtoChunk-only path. Until the rest
+            // gain one (or jigsaw placement runs against a `Cache`), the feature is skipped.
+            // Logged at debug level so normal biome/structure generation (e.g. taiga villages,
+            // which reference `pine`/`spruce` feature pool elements) does not flood the console.
+            tracing::debug!("Placed feature {feature_name:?} is not supported in a jigsaw pool");
             false
         }
     }
