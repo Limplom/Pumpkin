@@ -14,17 +14,48 @@ use wasmtime::component::Resource;
 
 pub struct PluginBossBar {
     pub bossbar: Bossbar,
+    /// Resource-location key under which this bar is registered in the server's
+    /// custom bossbar registry (`plugin:<uuid>`).
+    pub namespace: String,
     pub players: Vec<Uuid>,
     pub server: Weak<Server>,
 }
 
 impl PluginBossBar {
     #[must_use]
-    pub const fn new(bossbar: Bossbar, server: Weak<Server>) -> Self {
+    pub const fn new(bossbar: Bossbar, namespace: String, server: Weak<Server>) -> Self {
         Self {
             bossbar,
+            namespace,
             players: Vec::new(),
             server,
+        }
+    }
+
+    /// Mirrors this bar's current state into the server's custom bossbar
+    /// registry so it stays visible in `/bossbar` commands and, crucially,
+    /// survives the plugin-side resource handle being dropped.
+    async fn sync_to_server(&self) {
+        let Some(server) = self.server.upgrade() else {
+            return;
+        };
+        let mut bars = server.bossbars.lock().await;
+        let Some(custom) = bars.custom_bossbars.get_mut(&self.namespace) else {
+            return;
+        };
+        custom.bossbar_data.clone_from(&self.bossbar);
+        custom.players.clone_from(&self.players);
+    }
+
+    /// Removes this bar from the server's custom bossbar registry.
+    async fn deregister(&self) {
+        if let Some(server) = self.server.upgrade() {
+            server
+                .bossbars
+                .lock()
+                .await
+                .custom_bossbars
+                .remove(&self.namespace);
         }
     }
 }
@@ -134,8 +165,19 @@ impl boss_bar::HostBossBar for PluginHostState {
         bossbar.division = from_wit_division(division);
 
         let server = self.server.as_ref().expect("server not available").clone();
+
+        // Register the bar server-side (like `/bossbar add`) so it is tracked,
+        // shows in `/bossbar list`, and is not owned solely by the plugin handle.
+        let namespace = format!("plugin:{}", bossbar.uuid.as_simple());
+        server
+            .bossbars
+            .lock()
+            .await
+            .create_bossbar(namespace.clone(), bossbar.clone());
+
         let plugin_bossbar = Arc::new(Mutex::new(PluginBossBar::new(
             bossbar,
+            namespace,
             Arc::downgrade(&server),
         )));
         self.add_boss_bar(plugin_bossbar)
@@ -176,6 +218,7 @@ impl boss_bar::HostBossBar for PluginHostState {
                 }
             }
         }
+        pbb.sync_to_server().await;
         Ok(())
     }
 
@@ -196,6 +239,7 @@ impl boss_bar::HostBossBar for PluginHostState {
                 }
             }
         }
+        pbb.sync_to_server().await;
         Ok(())
     }
 
@@ -221,6 +265,7 @@ impl boss_bar::HostBossBar for PluginHostState {
                 }
             }
         }
+        pbb.sync_to_server().await;
         Ok(())
     }
 
@@ -250,6 +295,7 @@ impl boss_bar::HostBossBar for PluginHostState {
                 }
             }
         }
+        pbb.sync_to_server().await;
         Ok(())
     }
 
@@ -274,6 +320,7 @@ impl boss_bar::HostBossBar for PluginHostState {
                 }
             }
         }
+        pbb.sync_to_server().await;
         Ok(())
     }
 
@@ -320,6 +367,7 @@ impl boss_bar::HostBossBar for PluginHostState {
         if !pbb.players.contains(&uuid) {
             pbb.players.push(uuid);
             player.send_bossbar(&pbb.bossbar).await;
+            pbb.sync_to_server().await;
         }
         Ok(())
     }
@@ -338,6 +386,7 @@ impl boss_bar::HostBossBar for PluginHostState {
         if let Some(idx) = pbb.players.iter().position(|&x| x == uuid) {
             pbb.players.remove(idx);
             player.remove_bossbar(pbb.bossbar.uuid).await;
+            pbb.sync_to_server().await;
         }
         Ok(())
     }
@@ -351,12 +400,16 @@ impl boss_bar::HostBossBar for PluginHostState {
                 }
             }
         }
+        pbb.deregister().await;
         Ok(())
     }
 
     async fn drop(&mut self, res: Resource<BossBar>) -> wasmtime::Result<()> {
+        // Only tear down the plugin-side handle. The bar itself stays registered
+        // server-side (mirroring a `/bossbar`-created bar) so it remains visible
+        // after the plugin's local handle goes out of scope; explicit removal is
+        // done via `remove-all` / `remove-player`.
         let rep = res.rep();
-        self.remove_all(res).await?;
         self.resource_table
             .delete::<BossBarResource>(Resource::new_own(rep))
             .map_err(wasmtime::Error::from)?;
