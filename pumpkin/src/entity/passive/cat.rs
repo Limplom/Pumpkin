@@ -5,11 +5,15 @@ use std::sync::{
 
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::meta_data_type::MetaDataType;
+use pumpkin_data::particle::Particle;
+use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::tracked_data::TrackedData;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::java::client::play::Metadata;
+use pumpkin_util::math::vector3::Vector3;
 
 use crate::entity::{
     Entity, EntityBase, EntityBaseFuture, NBTStorage, NbtFuture,
@@ -19,6 +23,7 @@ use crate::entity::{
         tempt::TemptGoal, wander_around::WanderAroundGoal,
     },
     mob::{Mob, MobEntity},
+    player::Player,
 };
 
 const TEMPT_ITEMS: &[&Item] = &[&Item::COD, &Item::SALMON];
@@ -113,6 +118,40 @@ impl NBTStorage for CatEntity {
 impl Mob for CatEntity {
     fn get_mob_entity(&self) -> &MobEntity {
         &self.mob_entity
+    }
+
+    fn mob_interact<'a>(
+        &'a self,
+        player: &'a Arc<Player>,
+        item_stack: &'a mut ItemStack,
+    ) -> EntityBaseFuture<'a, bool> {
+        Box::pin(async move {
+            let is_food = TEMPT_ITEMS.iter().any(|i| i.id == item_stack.item.id);
+            if is_food && self.is_breeding_ready() && !self.is_in_love() {
+                item_stack.decrement_unless_creative(player.gamemode.load(), 1);
+
+                self.mob_entity
+                    .set_love_ticks(600, Some(player.gameprofile.id));
+                let entity = &self.mob_entity.living_entity.entity;
+                let world = entity.world.load();
+                let pos = entity.pos.load();
+
+                world.spawn_particle(
+                    pos + Vector3::new(0.0, f64::from(entity.height()), 0.0),
+                    Vector3::new(0.5, 0.5, 0.5),
+                    1.0,
+                    7,
+                    Particle::Heart,
+                );
+                world.play_sound(
+                    Sound::EntityCatAmbient,
+                    SoundCategory::Neutral,
+                    &entity.pos.load(),
+                );
+                return true;
+            }
+            false
+        })
     }
 
     fn mob_set_variant_name(&self, name: &str) {
