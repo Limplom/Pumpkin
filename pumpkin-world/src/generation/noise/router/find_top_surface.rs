@@ -7,6 +7,15 @@ use crate::generation::noise::router::{
     density_function::NoiseFunctionComponentRange,
 };
 
+/// Density threshold that marks the preliminary surface level.
+///
+/// Matches vanilla's `NoiseChunk.computePreliminarySurfaceLevel` (`25.0 / 64.0 == 0.390625`).
+/// The search walks downward and treats the first cell whose density exceeds this value as the
+/// surface. Using a lower threshold (e.g. `0.0`) overestimates the surface height, which makes
+/// the surface rule's `AbovePreliminarySurface` condition reject the true top blocks and leaves
+/// raw stone exposed.
+pub const PRELIMINARY_SURFACE_DENSITY_THRESHOLD: f64 = 25.0 / 64.0;
+
 pub struct FindTopSurface {
     density_index: usize,
     upper_bound_index: usize,
@@ -79,7 +88,7 @@ impl StaticChunkNoiseFunctionComponentImpl for FindTopSurface {
             &Vector3::new(pos.x, upper.floor() as i32, pos.z),
             sample_options,
         );
-        if density > 0.0 {
+        if density > PRELIMINARY_SURFACE_DENSITY_THRESHOLD {
             return upper;
         }
 
@@ -94,7 +103,8 @@ impl StaticChunkNoiseFunctionComponentImpl for FindTopSurface {
             return lower_bound as f64;
         }
 
-        // Walk downward in cellHeight steps, return the first Y where density > 0.0
+        // Walk downward in cellHeight steps, return the first Y whose density exceeds the
+        // preliminary surface threshold
         let mut y = top_y;
         while y >= lower_bound {
             let sample_pos = Vector3::new(pos.x, y, pos.z);
@@ -103,7 +113,7 @@ impl StaticChunkNoiseFunctionComponentImpl for FindTopSurface {
                 &sample_pos,
                 sample_options,
             );
-            if density > 0.0 {
+            if density > PRELIMINARY_SURFACE_DENSITY_THRESHOLD {
                 return y as f64;
             }
             y -= cell_height;

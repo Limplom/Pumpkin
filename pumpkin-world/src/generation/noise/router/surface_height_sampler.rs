@@ -11,6 +11,7 @@ use super::{
     },
     chunk_noise_router::ChunkNoiseFunctionComponent,
     density_function::{NoiseFunctionComponentRange, PassThrough},
+    find_top_surface::PRELIMINARY_SURFACE_DENSITY_THRESHOLD,
     proto_noise_router::{ProtoNoiseFunctionComponent, ProtoSurfaceEstimator},
 };
 
@@ -102,7 +103,7 @@ impl<'a> SurfaceHeightEstimateSampler<'a> {
                     &Vector3::new(aligned_x, y, aligned_z),
                     &sample_options,
                 );
-                if density > 0.0 {
+                if density > PRELIMINARY_SURFACE_DENSITY_THRESHOLD {
                     return y;
                 }
                 y -= cell_height;
