@@ -148,8 +148,11 @@ impl Goal for AvoidEntityGoal {
 
     fn should_continue<'a>(&'a self, mob: &'a dyn Mob) -> GoalFuture<'a, bool> {
         Box::pin(async move {
-            let navigator = mob.get_mob_entity().navigator.lock().unwrap();
-            !navigator.is_idle()
+            // Keep fleeing while the threat is still within flee distance, even if
+            // the navigator momentarily reports idle (e.g. it just finished the
+            // current leg). Relying only on `!is_idle()` made the creeper stop after
+            // a single path segment and never actually escape the cat/ocelot.
+            self.find_threat(mob).is_some()
         })
     }
 
@@ -165,16 +168,35 @@ impl Goal for AvoidEntityGoal {
 
     fn tick<'a>(&'a mut self, mob: &'a dyn Mob) -> GoalFuture<'a, ()> {
         Box::pin(async move {
-            if let Some(target) = &self.target {
-                let mob_pos = mob.get_mob_entity().living_entity.entity.pos.load();
-                let threat_pos = target.get_entity().pos.load();
-                let dist_sq = mob_pos.squared_distance_to_vec(&threat_pos);
-                let speed = if dist_sq < FAST_DISTANCE_SQ {
-                    self.fast_speed
-                } else {
-                    self.slow_speed
-                };
-                let mut navigator = mob.get_mob_entity().navigator.lock().unwrap();
+            let Some(target) = &self.target else {
+                return;
+            };
+
+            let mob_pos = mob.get_mob_entity().living_entity.entity.pos.load();
+            let threat_pos = target.get_entity().pos.load();
+            let dist_sq = mob_pos.squared_distance_to_vec(&threat_pos);
+            let speed = if dist_sq < FAST_DISTANCE_SQ {
+                self.fast_speed
+            } else {
+                self.slow_speed
+            };
+
+            // If the navigator ran out of path but the threat is still close, pick a
+            // fresh flee position and keep running away instead of standing still.
+            let is_idle = {
+                let navigator = mob.get_mob_entity().navigator.lock().unwrap();
+                navigator.is_idle()
+            };
+            if is_idle {
+                self.flee_pos = Self::find_flee_position(mob, &threat_pos);
+            }
+
+            let mut navigator = mob.get_mob_entity().navigator.lock().unwrap();
+            if is_idle {
+                if let Some(flee_pos) = self.flee_pos {
+                    navigator.set_progress(NavigatorGoal::new(mob_pos, flee_pos, speed));
+                }
+            } else {
                 navigator.set_speed(speed);
             }
         })
