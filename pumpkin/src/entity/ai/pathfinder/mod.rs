@@ -100,8 +100,19 @@ const MAX_YAW_TURN_PER_TICK: f32 = 90.0;
 impl Navigator {
     pub fn set_progress(&mut self, goal: NavigatorGoal) {
         self.is_idle.store(false, Ordering::Relaxed);
+        // Only invalidate the cached path if the destination actually changed.
+        // Goals like BreedGoal call set_progress every tick with a moving target
+        // (the mate's current position). Resetting current_path unconditionally
+        // made the navigator recompute A* every single tick, leaving no time to
+        // actually walk along the path -> mobs never reached each other.
+        let same_destination = self
+            .current_goal
+            .as_ref()
+            .is_some_and(|prev| prev.destination == goal.destination);
+        if !same_destination {
+            self.current_path = None;
+        }
         self.current_goal = Some(goal);
-        self.current_path = None;
     }
 
     pub const fn set_speed(&mut self, speed: f64) {

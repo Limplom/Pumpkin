@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use pumpkin_util::math::vector3::Vector3;
 use uuid::Uuid;
 
 use crate::entity::{EntityBase, ai::pathfinder::NavigatorGoal, mob::Mob, r#type::from_type};
@@ -10,7 +11,14 @@ pub struct BreedGoal {
     speed: f64,
     mate: Option<Arc<dyn EntityBase>>,
     timer: i32,
+    /// Last mate position we aimed the navigator at. Re-target only when the mate
+    /// has actually moved by more than this many blocks. Without this, every tick
+    /// produces a new destination, the navigator resets its cached A* path, and
+    /// the mob never makes progress towards the partner.
+    last_mate_pos: Option<Vector3<f64>>,
 }
+
+const RETARGET_THRESHOLD_SQ: f64 = 1.0;
 
 impl BreedGoal {
     #[must_use]
@@ -19,6 +27,7 @@ impl BreedGoal {
             speed,
             mate: None,
             timer: 0,
+            last_mate_pos: None,
         })
     }
 
@@ -132,6 +141,7 @@ impl Goal for BreedGoal {
     fn start<'a>(&'a mut self, _mob: &'a dyn Mob) -> GoalFuture<'a, ()> {
         Box::pin(async {
             self.timer = 0;
+            self.last_mate_pos = None;
         })
     }
 
@@ -139,6 +149,7 @@ impl Goal for BreedGoal {
         Box::pin(async {
             self.mate = None;
             self.timer = 0;
+            self.last_mate_pos = None;
             let mut navigator = mob.get_mob_entity().navigator.lock().unwrap();
             navigator.stop();
         })
@@ -161,9 +172,21 @@ impl Goal for BreedGoal {
             let my_pos = mob.get_entity().pos.load();
             let dist_sq = my_pos.squared_distance_to_vec(&mate_pos);
 
+            // Only re-target the navigator when the mate has actually moved.
+            // Re-targeting every tick would invalidate the cached A* path each
+            // tick, leaving no time to walk -> the mob never reaches the partner.
+            let needs_retarget = self
+                .last_mate_pos
+                .is_none_or(|p| p.squared_distance_to_vec(&mate_pos) > RETARGET_THRESHOLD_SQ);
+
             {
                 let mut navigator = mob_entity.navigator.lock().unwrap();
-                navigator.set_progress(NavigatorGoal::new(my_pos, mate_pos, self.speed));
+                if needs_retarget {
+                    navigator.set_progress(NavigatorGoal::new(my_pos, mate_pos, self.speed));
+                    self.last_mate_pos = Some(mate_pos);
+                } else {
+                    navigator.set_speed(self.speed);
+                }
             };
 
             self.timer += 1;
